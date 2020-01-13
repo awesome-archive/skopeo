@@ -17,6 +17,12 @@ Uses the system's trust policy to validate images, rejects images not trusted by
 
 ## OPTIONS
 
+**--all**
+
+If _source-image_ refers to a list of images, instead of copying just the image which matches the current OS and
+architecture (subject to the use of the global --override-os and --override-arch options), attempt to copy all of
+the images in the list, and the list itself.
+
 **--authfile** _path_
 
 Path of the authentication file. Default is ${XDG_RUNTIME\_DIR}/containers/auth.json, which is set using `podman login`.
@@ -29,6 +35,10 @@ If the authorization state is not found there, $HOME/.docker/config.json is chec
 **--remove-signatures** do not copy signatures, if any, from _source-image_. Necessary when copying a signed image to a destination which does not support signatures.
 
 **--sign-by=**_key-id_ add a signature using that key ID for an image name corresponding to _destination-image_
+
+**--encryption-key** _Key_ a reference prefixed with the encryption protocol to use. The supported protocols are JWE, PGP and PKCS7. For instance, jwe:/path/to/key.pem or pgp:admin@example.com or pkcs7:/path/to/x509-file. This feature is still *experimental*.
+
+**--decryption-key** _Key_ a reference required to perform decryption of container images. This should point to files which represent keys and/or certificates that can be used for decryption. Decryption will be tried with all keys. This feature is still *experimental*.
 
 **--src-creds** _username[:password]_ for accessing the source registry
 
@@ -48,8 +58,6 @@ If the authorization state is not found there, $HOME/.docker/config.json is chec
 
 **--dest-no-creds** _bool-value_  Access the registry anonymously.
 
-**--dest-ostree-tmp-dir** _path_ Directory to use for OSTree temporary files.
-
 **--dest-tls-verify** _bool-value_ Require HTTPS and verify certificates when talking to container destination registry or daemon (defaults to true)
 
 **--src-daemon-host** _host_ Copy from docker daemon at _host_. If _host_ starts with `tcp://`, HTTPS is enabled by default. To use plain HTTP, use the form `http://` (default is `unix:///var/run/docker.sock`).
@@ -57,6 +65,10 @@ If the authorization state is not found there, $HOME/.docker/config.json is chec
 **--dest-daemon-host** _host_ Copy to docker daemon at _host_. If _host_ starts with `tcp://`, HTTPS is enabled by default. To use plain HTTP, use the form `http://` (default is `unix:///var/run/docker.sock`).
 
 Existing signatures, if any, are preserved as well.
+
+**--dest-compress-format** _format_ Specifies the compression format to use.  Supported values are: `gzip` and `zstd`.
+
+**--dest-compress-level** _format_ Specifies the compression level to use.  The value is specific to the compression algorithm used, e.g. for zstd the accepted values are in the range 1-20 (inclusive), while for gzip it is 1-9 (inclusive).
 
 ## EXAMPLES
 
@@ -73,9 +85,33 @@ $ ls /var/lib/images/busybox/*
 To copy and sign an image:
 
 ```sh
-$ skopeo copy --sign-by dev@example.com atomic:example/busybox:streaming atomic:example/busybox:gold
+# skopeo copy --sign-by dev@example.com container-storage:example/busybox:streaming docker://example/busybox:gold
 ```
 
+To encrypt an image:
+```sh
+skopeo copy docker://docker.io/library/nginx:latest oci:local_nginx:latest
+
+openssl genrsa -out private.key 1024
+openssl rsa -in private.key -pubout > public.key
+
+skopeo  copy --encryption-key jwe:./public.key oci:local_nginx:latest oci:try-encrypt:encrypted
+```
+
+To decrypt an image:
+```sh
+skopeo copy --decryption-key ./private.key oci:try-encrypt:encrypted oci:try-decrypt:decrypted
+```
+
+To copy encrypted image without decryption:
+```sh
+skopeo copy oci:try-encrypt:encrypted oci:try-encrypt-copy:encrypted
+```
+
+To decrypt an image that requires more than one key:
+```sh
+skopeo copy --decryption-key ./private1.key --decryption-key ./private2.key --decryption-key ./private3.key oci:try-encrypt:encrypted oci:try-decrypt:decrypted
+```
 ## SEE ALSO
 skopeo(1), podman-login(1), docker-login(1)
 

@@ -4,7 +4,7 @@ import (
 	"flag"
 	"testing"
 
-	"github.com/containers/image/types"
+	"github.com/containers/image/v5/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -152,7 +152,6 @@ func TestImageDestOptionsNewSystemContext(t *testing.T) {
 	}, []string{
 		"--authfile", "/srv/authfile",
 		"--dest-cert-dir", "/srv/cert-dir",
-		"--dest-ostree-tmp-dir", "/srv/ostree-tmp-dir",
 		"--dest-shared-blob-dir", "/srv/shared-blob-dir",
 		"--dest-compress=true",
 		"--dest-daemon-host", "daemon-host.example.com",
@@ -170,7 +169,6 @@ func TestImageDestOptionsNewSystemContext(t *testing.T) {
 		DockerCertPath:                    "/srv/cert-dir",
 		DockerInsecureSkipTLSVerify:       types.OptionalBoolTrue,
 		DockerAuthConfig:                  &types.DockerAuthConfig{Username: "creds-user", Password: "creds-password"},
-		OSTreeTmpDirPath:                  "/srv/ostree-tmp-dir",
 		DockerDaemonCertPath:              "/srv/cert-dir",
 		DockerDaemonHost:                  "daemon-host.example.com",
 		DockerDaemonInsecureSkipTLSVerify: true,

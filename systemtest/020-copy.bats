@@ -44,6 +44,21 @@ function setup() {
     diff -urN $dir1 $dir2
 }
 
+# Compression zstd
+@test "copy: oci, round trip, zstd" {
+    local remote_image=docker://busybox:latest
+
+    local dir=$TESTDIR/dir
+
+    run_skopeo copy --dest-compress --dest-compress-format=zstd $remote_image oci:$dir:latest
+
+    # zstd magic number
+    local magic=$(printf "\x28\xb5\x2f\xfd")
+
+    # Check there is at least one file that has the zstd magic number as the first 4 bytes
+    (for i in $dir/blobs/sha256/*; do test "$(head -c 4 $i)" = $magic && exit 0; done; exit 1)
+}
+
 # Same image, extracted once with :tag and once without
 @test "copy: oci w/ and w/o tags" {
     local remote_image=docker://busybox:latest
@@ -59,6 +74,15 @@ function setup() {
 
     # ...which should differ only in the tag. (But that's too hard to check)
     grep '"org.opencontainers.image.ref.name":"withtag"' $dir2/index.json
+}
+
+# Registry -> storage -> oci-archive
+@test "copy: registry -> storage -> oci-archive" {
+    local alpine=docker.io/library/alpine:latest
+    local tmp=$TESTDIR/oci
+
+    run_skopeo copy docker://$alpine containers-storage:$alpine
+    run_skopeo copy containers-storage:$alpine oci-archive:$tmp
 }
 
 # This one seems unlikely to get fixed

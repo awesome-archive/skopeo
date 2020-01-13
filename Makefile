@@ -1,8 +1,10 @@
-.PHONY: all binary build-container docs docs-in-container build-local clean install install-binary install-completions shell test-integration .install.vndr vendor
+.PHONY: all binary build-container docs docs-in-container build-local clean install install-binary install-completions shell test-integration .install.vndr vendor vendor-in-container
+
+export GOPROXY=https://proxy.golang.org
 
 ifeq ($(shell uname),Darwin)
 PREFIX ?= ${DESTDIR}/usr/local
-DARWIN_BUILD_TAG=containers_image_ostree_stub
+DARWIN_BUILD_TAG=
 # On macOS, (brew install gpgme) installs it within /usr/local, but /usr/local/include is not in the default search path.
 # Rather than hard-code this directory, use gpgme-config. Sadly that must be done at the top-level user
 # instead of locally in the gpgme subpackage, because cgo supports only pkg-config, not general shell scripts,
@@ -18,16 +20,23 @@ INSTALLDIR=${PREFIX}/bin
 MANINSTALLDIR=${PREFIX}/share/man
 CONTAINERSSYSCONFIGDIR=${DESTDIR}/etc/containers
 REGISTRIESDDIR=${CONTAINERSSYSCONFIGDIR}/registries.d
-SIGSTOREDIR=${DESTDIR}/var/lib/atomic/sigstore
+SIGSTOREDIR=${DESTDIR}/var/lib/containers/sigstore
 BASHINSTALLDIR=${PREFIX}/share/bash-completion/completions
+
 GO ?= go
+GOBIN := $(shell $(GO) env GOBIN)
+ifeq ($(GOBIN),)
+GOBIN := $(GOPATH)/bin
+endif
+
 CONTAINER_RUNTIME := $(shell command -v podman 2> /dev/null || echo docker)
 GOMD2MAN ?= $(shell command -v go-md2man || echo '$(GOBIN)/go-md2man')
 
-GO_BUILD=$(GO) build
-# Go module support: set `-mod=vendor` to use the vendored sources
+# Go module support: set `-mod=vendor` to use the vendored sources.
+# See also hack/make.sh.
 ifeq ($(shell go help mod >/dev/null 2>&1 && echo true), true)
-  GO_BUILD=GO111MODULE=on $(GO) build -mod=vendor
+  GO:=GO111MODULE=on $(GO)
+  MOD_VENDOR=-mod=vendor
 endif
 
 ifeq ($(DEBUG), 1)
@@ -58,12 +67,11 @@ MANPAGES ?= $(MANPAGES_MD:%.md=%)
 
 BTRFS_BUILD_TAG = $(shell hack/btrfs_tag.sh) $(shell hack/btrfs_installed_tag.sh)
 LIBDM_BUILD_TAG = $(shell hack/libdm_tag.sh)
-OSTREE_BUILD_TAG = $(shell hack/ostree_tag.sh)
-LOCAL_BUILD_TAGS = $(BTRFS_BUILD_TAG) $(LIBDM_BUILD_TAG) $(OSTREE_BUILD_TAG) $(DARWIN_BUILD_TAG)
+LOCAL_BUILD_TAGS = $(BTRFS_BUILD_TAG) $(LIBDM_BUILD_TAG) $(DARWIN_BUILD_TAG)
 BUILDTAGS += $(LOCAL_BUILD_TAGS)
 
 ifeq ($(DISABLE_CGO), 1)
-	override BUILDTAGS = containers_image_ostree_stub exclude_graphdriver_devicemapper exclude_graphdriver_btrfs containers_image_openpgp
+	override BUILDTAGS = exclude_graphdriver_devicemapper exclude_graphdriver_btrfs containers_image_openpgp
 endif
 
 #   make all DEBUG=1
@@ -99,10 +107,10 @@ binary-static: cmd/skopeo
 
 # Build w/o using containers
 binary-local:
-	$(GPGME_ENV) $(GO_BUILD) ${GO_DYN_FLAGS} -ldflags "-X main.gitCommit=${GIT_COMMIT}" -gcflags "$(GOGCFLAGS)" -tags "$(BUILDTAGS)" -o skopeo ./cmd/skopeo
+	$(GPGME_ENV) $(GO) build $(MOD_VENDOR) ${GO_DYN_FLAGS} -ldflags "-X main.gitCommit=${GIT_COMMIT}" -gcflags "$(GOGCFLAGS)" -tags "$(BUILDTAGS)" -o skopeo ./cmd/skopeo
 
 binary-local-static:
-	$(GPGME_ENV) $(GO_BUILD) -ldflags "-extldflags \"-static\" -X main.gitCommit=${GIT_COMMIT}" -gcflags "$(GOGCFLAGS)" -tags "$(BUILDTAGS)" -o skopeo ./cmd/skopeo
+	$(GPGME_ENV) $(GO) build $(MOD_VENDOR) -ldflags "-extldflags \"-static\" -X main.gitCommit=${GIT_COMMIT}" -gcflags "$(GOGCFLAGS)" -tags "$(BUILDTAGS)" -o skopeo ./cmd/skopeo
 
 build-container:
 	${CONTAINER_RUNTIME} build ${BUILD_ARGS} -t "$(IMAGE)" .
@@ -151,8 +159,8 @@ test-integration: build-container
 # complicated set of options needed to run podman-in-podman
 test-system: build-container
 	DTEMP=$(shell mktemp -d --tmpdir=/var/tmp podman-tmp.XXXXXX); \
-	$(CONTAINER_CMD) --privileged --net=host \
-	    -v $$DTEMP:/var/lib/containers:Z \
+	$(CONTAINER_CMD) --privileged \
+	    -v $$DTEMP:/var/lib/containers:Z -v /run/systemd/journal/socket:/run/systemd/journal/socket \
             "$(IMAGE)" \
             bash -c 'BUILDTAGS="$(BUILDTAGS)" hack/make.sh test-system'; \
 	rc=$$?; \
@@ -173,10 +181,13 @@ validate-local:
 	hack/make.sh validate-git-marks validate-gofmt validate-lint validate-vet
 
 test-unit-local:
-	$(GPGME_ENV) $(GO) test -tags "$(BUILDTAGS)" $$($(GO) list -tags "$(BUILDTAGS)" -e ./... | grep -v '^github\.com/containers/skopeo/\(integration\|vendor/.*\)$$')
+	$(GPGME_ENV) $(GO) test $(MOD_VENDOR) -tags "$(BUILDTAGS)" $$($(GO) list $(MOD_VENDOR) -tags "$(BUILDTAGS)" -e ./... | grep -v '^github\.com/containers/skopeo/\(integration\|vendor/.*\)$$')
 
 vendor:
 	export GO111MODULE=on \
 		$(GO) mod tidy && \
 		$(GO) mod vendor && \
 		$(GO) mod verify
+
+vendor-in-container:
+	podman run --privileged --rm --env HOME=/root -v `pwd`:/src -w /src docker.io/library/golang:1.13 make vendor

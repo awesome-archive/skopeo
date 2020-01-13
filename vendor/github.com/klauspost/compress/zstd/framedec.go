@@ -39,6 +39,9 @@ type frameDec struct {
 
 	rawInput byteBuffer
 
+	// Byte buffer that can be reused for small input blocks.
+	bBuf byteBuf
+
 	// asyncRunning indicates whether the async routine processes input on 'decoding'.
 	asyncRunning   bool
 	asyncRunningMu sync.Mutex
@@ -46,7 +49,8 @@ type frameDec struct {
 
 const (
 	// The minimum Window_Size is 1 KB.
-	minWindowSize = 1 << 10
+	MinWindowSize = 1 << 10
+	MaxWindowSize = 1 << 30
 )
 
 var (
@@ -57,7 +61,10 @@ var (
 func newFrameDec(o decoderOptions) *frameDec {
 	d := frameDec{
 		o:             o,
-		maxWindowSize: 1 << 30,
+		maxWindowSize: MaxWindowSize,
+	}
+	if d.maxWindowSize > o.maxDecodedSize {
+		d.maxWindowSize = o.maxDecodedSize
 	}
 	return &d
 }
@@ -187,14 +194,14 @@ func (d *frameDec) reset(br byteBuffer) error {
 			// When FCS_Field_Size is 2, the offset of 256 is added.
 			d.FrameContentSize = uint64(b[0]) | (uint64(b[1]) << 8) + 256
 		case 4:
-			d.FrameContentSize = uint64(b[0]) | (uint64(b[1]) << 8) | (uint64(b[2]) << 16) | (uint64(b[3] << 24))
+			d.FrameContentSize = uint64(b[0]) | (uint64(b[1]) << 8) | (uint64(b[2]) << 16) | (uint64(b[3]) << 24)
 		case 8:
 			d1 := uint32(b[0]) | (uint32(b[1]) << 8) | (uint32(b[2]) << 16) | (uint32(b[3]) << 24)
 			d2 := uint32(b[4]) | (uint32(b[5]) << 8) | (uint32(b[6]) << 16) | (uint32(b[7]) << 24)
 			d.FrameContentSize = uint64(d1) | (uint64(d2) << 32)
 		}
 		if debug {
-			println("field size bits:", v, "fcsSize:", fcsSize, "FrameContentSize:", d.FrameContentSize, hex.EncodeToString(b[:fcsSize]))
+			println("field size bits:", v, "fcsSize:", fcsSize, "FrameContentSize:", d.FrameContentSize, hex.EncodeToString(b[:fcsSize]), "singleseg:", d.SingleSegment, "window:", d.WindowSize)
 		}
 	}
 	// Move this to shared.
@@ -209,8 +216,8 @@ func (d *frameDec) reset(br byteBuffer) error {
 	if d.WindowSize == 0 && d.SingleSegment {
 		// We may not need window in this case.
 		d.WindowSize = d.FrameContentSize
-		if d.WindowSize < minWindowSize {
-			d.WindowSize = minWindowSize
+		if d.WindowSize < MinWindowSize {
+			d.WindowSize = MinWindowSize
 		}
 	}
 
@@ -219,7 +226,7 @@ func (d *frameDec) reset(br byteBuffer) error {
 		return ErrWindowSizeExceeded
 	}
 	// The minimum Window_Size is 1 KB.
-	if d.WindowSize < minWindowSize {
+	if d.WindowSize < MinWindowSize {
 		println("got window size: ", d.WindowSize)
 		return ErrWindowSizeTooSmall
 	}
@@ -232,7 +239,9 @@ func (d *frameDec) reset(br byteBuffer) error {
 
 // next will start decoding the next block from stream.
 func (d *frameDec) next(block *blockDec) error {
-	println("decoding new block")
+	if debug {
+		printf("decoding new block %p:%p", block, block.data)
+	}
 	err := block.reset(d.rawInput, d.WindowSize)
 	if err != nil {
 		println("block error:", err)
@@ -280,13 +289,13 @@ func (d *frameDec) checkCRC() error {
 	if !d.HasCheckSum {
 		return nil
 	}
-	var tmp [8]byte
-	gotB := d.crc.Sum(tmp[:0])
+	var tmp [4]byte
+	got := d.crc.Sum64()
 	// Flip to match file order.
-	gotB[0] = gotB[7]
-	gotB[1] = gotB[6]
-	gotB[2] = gotB[5]
-	gotB[3] = gotB[4]
+	tmp[0] = byte(got >> 0)
+	tmp[1] = byte(got >> 8)
+	tmp[2] = byte(got >> 16)
+	tmp[3] = byte(got >> 24)
 
 	// We can overwrite upper tmp now
 	want := d.rawInput.readSmall(4)
@@ -295,11 +304,15 @@ func (d *frameDec) checkCRC() error {
 		return io.ErrUnexpectedEOF
 	}
 
-	if !bytes.Equal(gotB[:4], want) {
-		println("CRC Check Failed:", gotB[:4], "!=", want)
+	if !bytes.Equal(tmp[:], want) {
+		if debug {
+			println("CRC Check Failed:", tmp[:], "!=", want)
+		}
 		return ErrCRCMismatch
 	}
-	println("CRC ok")
+	if debug {
+		println("CRC ok", tmp[:])
+	}
 	return nil
 }
 
@@ -401,6 +414,7 @@ func (d *frameDec) startDecoder(output chan decodeOutput) {
 		}
 		written += int64(len(r.b))
 		if d.SingleSegment && uint64(written) > d.FrameContentSize {
+			println("runDecoder: single segment and", uint64(written), ">", d.FrameContentSize)
 			r.err = ErrFrameSizeExceeded
 			output <- r
 			return
@@ -423,7 +437,7 @@ func (d *frameDec) startDecoder(output chan decodeOutput) {
 	}
 }
 
-// runDecoder will create a sync decoder that will decodeAsync a block of data.
+// runDecoder will create a sync decoder that will decode a block of data.
 func (d *frameDec) runDecoder(dst []byte, dec *blockDec) ([]byte, error) {
 	// TODO: Init to dictionary
 	d.history.reset()
@@ -451,6 +465,7 @@ func (d *frameDec) runDecoder(dst []byte, dec *blockDec) ([]byte, error) {
 			break
 		}
 		if d.SingleSegment && uint64(len(d.history.b)) > d.o.maxDecodedSize {
+			println("runDecoder: single segment and", uint64(len(d.history.b)), ">", d.o.maxDecodedSize)
 			err = ErrFrameSizeExceeded
 			break
 		}
@@ -463,9 +478,10 @@ func (d *frameDec) runDecoder(dst []byte, dec *blockDec) ([]byte, error) {
 			if err == nil {
 				if n != len(dst)-crcStart {
 					err = io.ErrShortWrite
+				} else {
+					err = d.checkCRC()
 				}
 			}
-			err = d.checkCRC()
 		}
 	}
 	d.history.b = saved

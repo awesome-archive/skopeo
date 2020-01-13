@@ -44,9 +44,6 @@ Most commands refer to container images, using a _transport_`:`_details_ format.
   **oci:**_path_**:**_tag_
   An image _tag_ in a directory compliant with "Open Container Image Layout Specification" at _path_.
 
-  **ostree:**_image_[**@**_/absolute/repo/path_]
-  An image in local OSTree repository.  _/absolute/repo/path_ defaults to _/ostree/repo_.
-
 ## OPTIONS
 
   **--debug** enable debug output
@@ -77,6 +74,7 @@ Most commands refer to container images, using a _transport_`:`_details_ format.
 | [skopeo-manifest-digest(1)](skopeo-manifest-digest.1.md)    | Compute a manifest digest of manifest-file and write it to standard output.|
 | [skopeo-standalone-sign(1)](skopeo-standalone-sign.1.md)    | Sign an image.                                               |
 | [skopeo-standalone-verify(1)](skopeo-standalone-verify.1.md)| Verify an image.                                             |
+| [skopeo-sync(1)](skopeo-sync.1.md)| Copy images from one or more repositories to a user specified destination.             |
 
 ## FILES
   **/etc/containers/policy.json**

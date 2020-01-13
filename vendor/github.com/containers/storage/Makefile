@@ -1,4 +1,5 @@
 export GO111MODULE=off
+export GOPROXY=https://proxy.golang.org
 
 .PHONY: \
 	all \
@@ -27,8 +28,8 @@ PACKAGE := github.com/containers/storage
 GIT_BRANCH := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
 GIT_BRANCH_CLEAN := $(shell echo $(GIT_BRANCH) | sed -e "s/[^[:alnum:]]/-/g")
 EPOCH_TEST_COMMIT := 0418ebf59f9e1f564831c0ba9378b7f8e40a1c73
-NATIVETAGS := exclude_graphdriver_devicemapper exclude_graphdriver_btrfs exclude_graphdriver_overlay
-AUTOTAGS := $(shell ./hack/btrfs_tag.sh) $(shell ./hack/libdm_tag.sh) $(shell ./hack/ostree_tag.sh)
+NATIVETAGS :=
+AUTOTAGS := $(shell ./hack/btrfs_tag.sh) $(shell ./hack/libdm_tag.sh)
 BUILDFLAGS := -tags "$(AUTOTAGS) $(TAGS)" $(FLAGS)
 GO ?= go
 
@@ -125,6 +126,9 @@ lint: install.tools
 
 help: ## this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-z A-Z_-]+:.*?## / {gsub(" ",",",$$1);gsub("\\\\n",sprintf("\n%22c"," "), $$2);printf "\033[36m%-21s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+vendor-in-container:
+	podman run --privileged --rm --env HOME=/root -v `pwd`:/src -w /src golang make vendor
 
 vendor:
 	export GO111MODULE=on \

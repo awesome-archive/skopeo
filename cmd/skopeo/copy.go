@@ -6,11 +6,14 @@ import (
 	"io"
 	"strings"
 
-	"github.com/containers/image/copy"
-	"github.com/containers/image/docker/reference"
-	"github.com/containers/image/manifest"
-	"github.com/containers/image/transports"
-	"github.com/containers/image/transports/alltransports"
+	"github.com/containers/image/v5/copy"
+	"github.com/containers/image/v5/docker/reference"
+	"github.com/containers/image/v5/manifest"
+	"github.com/containers/image/v5/transports"
+	"github.com/containers/image/v5/transports/alltransports"
+
+	encconfig "github.com/containers/ocicrypt/config"
+	enchelpers "github.com/containers/ocicrypt/helpers"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/urfave/cli"
 )
@@ -24,7 +27,9 @@ type copyOptions struct {
 	signByFingerprint string          // Sign the image using a GPG key with the specified fingerprint
 	format            optionalString  // Force conversion of the image to a specified format
 	quiet             bool            // Suppress output information when copying images
-
+	all               bool            // Copy all of the images if the source is a list
+	encryptionKeys    cli.StringSlice // Keys needed to encrypt the image
+	decryptionKeys    cli.StringSlice // Keys needed to decrypt the image
 }
 
 func copyCmd(global *globalOptions) cli.Command {
@@ -63,6 +68,11 @@ func copyCmd(global *globalOptions) cli.Command {
 				Destination: &opts.quiet,
 			},
 			cli.BoolFlag{
+				Name:        "all, a",
+				Usage:       "Copy all images if SOURCE-IMAGE is a list",
+				Destination: &opts.all,
+			},
+			cli.BoolFlag{
 				Name:        "remove-signatures",
 				Usage:       "Do not copy signatures from SOURCE-IMAGE",
 				Destination: &opts.removeSignatures,
@@ -76,6 +86,16 @@ func copyCmd(global *globalOptions) cli.Command {
 				Name:  "format, f",
 				Usage: "`MANIFEST TYPE` (oci, v2s1, or v2s2) to use when saving image to directory using the 'dir:' transport (default is manifest type of source)",
 				Value: newOptionalStringValue(&opts.format),
+			},
+			cli.StringSliceFlag{
+				Name:  "encryption-key",
+				Usage: "*Experimental* key with the encryption protocol to use needed to encrypt the image (e.g. jwe:/path/to/key.pem)",
+				Value: &opts.encryptionKeys,
+			},
+			cli.StringSliceFlag{
+				Name:  "decryption-key",
+				Usage: "*Experimental* key needed to decrypt the image",
+				Value: &opts.decryptionKeys,
 			},
 		}, sharedFlags...), srcFlags...), destFlags...),
 	}
@@ -147,6 +167,42 @@ func (opts *copyOptions) run(args []string, stdout io.Writer) error {
 	if opts.quiet {
 		stdout = nil
 	}
+	imageListSelection := copy.CopySystemImage
+	if opts.all {
+		imageListSelection = copy.CopyAllImages
+	}
+
+	if len(opts.encryptionKeys.Value()) > 0 && len(opts.decryptionKeys.Value()) > 0 {
+		return fmt.Errorf("--encryption-key and --decryption-key cannot be specified together")
+	}
+
+	var encLayers *[]int
+	var encConfig *encconfig.EncryptConfig
+	var decConfig *encconfig.DecryptConfig
+
+	if len(opts.encryptionKeys.Value()) > 0 {
+		// encryption
+		encLayers = &[]int{}
+		encryptionKeys := opts.encryptionKeys.Value()
+		ecc, err := enchelpers.CreateCryptoConfig(encryptionKeys, []string{})
+		if err != nil {
+			return fmt.Errorf("Invalid encryption keys: %v", err)
+		}
+		cc := encconfig.CombineCryptoConfigs([]encconfig.CryptoConfig{ecc})
+		encConfig = cc.EncryptConfig
+	}
+
+	if len(opts.decryptionKeys.Value()) > 0 {
+		// decryption
+		decryptionKeys := opts.decryptionKeys.Value()
+		dcc, err := enchelpers.CreateCryptoConfig([]string{}, decryptionKeys)
+		if err != nil {
+			return fmt.Errorf("Invalid decryption keys: %v", err)
+		}
+		cc := encconfig.CombineCryptoConfigs([]encconfig.CryptoConfig{dcc})
+		decConfig = cc.DecryptConfig
+	}
+
 	_, err = copy.Image(ctx, policyContext, destRef, srcRef, &copy.Options{
 		RemoveSignatures:      opts.removeSignatures,
 		SignBy:                opts.signByFingerprint,
@@ -154,6 +210,10 @@ func (opts *copyOptions) run(args []string, stdout io.Writer) error {
 		SourceCtx:             sourceCtx,
 		DestinationCtx:        destinationCtx,
 		ForceManifestMIMEType: manifestType,
+		ImageListSelection:    imageListSelection,
+		OciDecryptConfig:      decConfig,
+		OciEncryptLayers:      encLayers,
+		OciEncryptConfig:      encConfig,
 	})
 	return err
 }
